@@ -1,0 +1,19 @@
+[package]
+name = "cargo_sqruff"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+
+[dependencies]
+clippy_utils = { git = "https://github.com/rust-lang/rust-clippy", rev = "238edf273d195c8e472851ebd60571f77f978ac8" }
+dylint_linting = "4.1"
+sqruff-lib = { git = "https://github.com/quarylabs/sqruff.git" }
+
+[dev-dependencies]
+dylint_testing = "4.1"
+
+[package.metadata.rust-analyzer]
+rustc_private = true
