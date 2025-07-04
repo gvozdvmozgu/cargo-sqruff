@@ -1,5 +1,7 @@
 # cargo-sqruff
 
+Lint your SQL queries directly within your Rust code. A cargo-sqruff library powered by sqruff.
+
 ## Quick start
 
 1. Install cargo-dylint and dylint-link:
