@@ -92,15 +92,15 @@ impl<'tcx> LateLintPass<'tcx> for Sql {
             let result = self.linter.lint_string(sql, None, true);
             let has_violations = result.has_violations();
 
-            for violation in result.get_violations(None) {
+            for violation in result.violations() {
                 let rel = &violation.source_slice;
                 let abs_start = content_start + BytePos(rel.start as u32);
                 let abs_end = content_start + BytePos(rel.end as u32);
                 let abs_span = Span::new(abs_start, abs_end, SyntaxContext::root(), None);
 
                 cx.lint(CARGO_SQRUFF, |diag| {
-                    let code = violation.rule.unwrap().code;
-                    let description = violation.description;
+                    let code = violation.rule.as_ref().unwrap().code;
+                    let description = violation.description.to_string();
 
                     diag.span(abs_span);
                     diag.primary_message(format!("[{code}]: {description}"));
