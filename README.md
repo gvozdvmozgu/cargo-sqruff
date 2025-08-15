@@ -34,7 +34,7 @@ Lint your SQL queries directly within your Rust code. A cargo-sqruff library pow
     warning: `sql` (bin "sql") generated 2 warnings (run `cargo fix --bin "sql"` to apply 1 suggestion)
         Finished `release` profile target(s) in 0.05s
 
-        ```
+    ```
 
 3. VS Code integration
 
