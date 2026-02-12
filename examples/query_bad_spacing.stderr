@@ -1,0 +1,25 @@
+warning: [LT01]: Expected only single space before "1". Found "  ".
+  --> $DIR/query_bad_spacing.rs:2:48
+   |
+LL |     let _ = sqlx::query::<sqlx::Sqlite>("SELECT  1;");
+   |                                                ^^ Expected only single space before "1". Found "  ".
+   |
+   = note: `#[warn(cargo_sqruff)]` on by default
+
+warning: [LT12]: Files must end with a single trailing newline.
+  --> $DIR/query_bad_spacing.rs:2:51
+   |
+LL |     let _ = sqlx::query::<sqlx::Sqlite>("SELECT  1;");
+   |                                                   ^ Files must end with a single trailing newline.
+
+warning: SQL query contains violations
+   |
+help: consider using `sqruff` to fix this
+  --> $DIR/query_bad_spacing.rs:2:42
+   |
+LL -     let _ = sqlx::query::<sqlx::Sqlite>("SELECT  1;");
+LL +     let _ = sqlx::query::<sqlx::Sqlite>("SELECT 1;
+   |
+
+warning: 3 warnings emitted
+
