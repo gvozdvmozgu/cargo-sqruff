@@ -86,7 +86,17 @@ impl<'tcx> LateLintPass<'tcx> for Sql {
             let content_start = lit_lo + prefix_len;
             let content_end = arg.span.hi() - prefix_len;
 
-            let result = self.linter.lint_string(sql, None, true);
+            let result = match self.linter.lint_string(sql, None, true) {
+                Ok(result) => result,
+                Err(err) => {
+                    cx.lint(CARGO_SQRUFF, |diag| {
+                        diag.span(arg.span);
+                        diag.primary_message("failed to lint SQL query");
+                        diag.note(err.to_string());
+                    });
+                    return;
+                }
+            };
             let has_violations = result.has_violations();
 
             for violation in result.violations() {
