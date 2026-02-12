@@ -20,6 +20,31 @@ use rustc_session::{Session, declare_lint, impl_lint_pass};
 use rustc_span::{BytePos, Span, SyntaxContext};
 use sqruff_lib::core::{config::FluffConfig, linter::core::Linter};
 
+const SQLX_PATHS: &[&str] = &[
+    "sqlx::query",
+    "sqlx::query_as",
+    "sqlx::query_as_with",
+    "sqlx::query_scalar",
+    "sqlx::query_scalar_with",
+    "sqlx::query_with",
+    "sqlx::raw_sql",
+];
+
+const RUSQLITE_PATHS: &[&str] = &[
+    "rusqlite::Connection::execute",
+    "rusqlite::Connection::execute_batch",
+    "rusqlite::Connection::prepare",
+    "rusqlite::Connection::prepare_cached",
+    "rusqlite::Connection::query_row",
+    "rusqlite::Connection::query_row_and_then",
+    "rusqlite::Transaction::execute",
+    "rusqlite::Transaction::execute_batch",
+    "rusqlite::Transaction::prepare",
+    "rusqlite::Transaction::prepare_cached",
+    "rusqlite::Transaction::query_row",
+    "rusqlite::Transaction::query_row_and_then",
+];
+
 declare_lint! {
     pub CARGO_SQRUFF,
     Warn,
@@ -46,92 +71,152 @@ struct Sql {
     definitions: DefIdSet,
 }
 
-impl_lint_pass!(Sql => [CARGO_SQRUFF]);
+struct SqlLiteral {
+    sql: String,
+    full_span: Span,
+    content_start: BytePos,
+    content_end: BytePos,
+}
 
-impl<'tcx> LateLintPass<'tcx> for Sql {
-    fn check_crate(&mut self, cx: &rustc_lint::LateContext<'tcx>) {
-        let paths = [
-            "query",
-            "query_as",
-            "query_as_with",
-            "query_scalar",
-            "query_scalar_with",
-            "query_with",
-            "raw_sql",
-        ];
-
+impl Sql {
+    fn register_paths<'tcx>(&mut self, cx: &rustc_lint::LateContext<'tcx>, paths: &[&str]) {
         for path in paths {
-            let full_path = format!("sqlx::{path}");
-            for def_id in lookup_path_str(cx.tcx, PathNS::Value, &full_path) {
+            for def_id in lookup_path_str(cx.tcx, PathNS::Value, path) {
                 self.definitions.insert(def_id);
             }
         }
     }
 
-    fn check_expr(&mut self, cx: &rustc_lint::LateContext<'tcx>, expr: &'tcx Expr<'tcx>) {
-        if let ExprKind::Call(_, args) = expr.kind
-            && let Some(def_id) = fn_def_id(cx, expr)
-            && self.definitions.contains(&def_id)
-            && let Some(arg) = args.first()
-            && let ExprKind::Lit(lit) = arg.kind
-            && let LitKind::Str(ref r, style) = lit.node
+    fn tracked_call<'tcx>(
+        &self,
+        cx: &rustc_lint::LateContext<'tcx>,
+        expr: &'tcx Expr<'tcx>,
+    ) -> bool {
+        fn_def_id(cx, expr).is_some_and(|def_id| self.definitions.contains(&def_id))
+    }
+
+    fn first_arg<'tcx>(expr: &'tcx Expr<'tcx>) -> Option<&'tcx Expr<'tcx>> {
+        match expr.kind {
+            ExprKind::Call(_, args) => args.first(),
+            ExprKind::MethodCall(_, _, args, _) => args.first(),
+            _ => None,
+        }
+    }
+
+    fn sql_literal<'tcx>(expr: &'tcx Expr<'tcx>) -> Option<SqlLiteral> {
+        let arg = Self::first_arg(expr)?;
+
+        if let ExprKind::Lit(lit) = arg.kind
+            && let LitKind::Str(ref raw, style) = lit.node
         {
-            let sql = r.as_str();
-            let lit_lo = arg.span.lo();
             let prefix_len = BytePos(match style {
                 StrStyle::Raw(n) => 2 + n as u32,
                 StrStyle::Cooked => 1,
             });
 
-            let content_start = lit_lo + prefix_len;
-            let content_end = arg.span.hi() - prefix_len;
+            return Some(SqlLiteral {
+                sql: raw.as_str().to_owned(),
+                full_span: arg.span,
+                content_start: arg.span.lo() + prefix_len,
+                content_end: arg.span.hi() - prefix_len,
+            });
+        }
 
-            let result = match self.linter.lint_string(sql, None, true) {
-                Ok(result) => result,
-                Err(err) => {
-                    cx.lint(CARGO_SQRUFF, |diag| {
-                        diag.span(arg.span);
-                        diag.primary_message("failed to lint SQL query");
-                        diag.note(err.to_string());
-                    });
-                    return;
-                }
-            };
-            let has_violations = result.has_violations();
+        None
+    }
 
-            for violation in result.violations() {
-                let rel = &violation.source_slice;
-                let abs_start = content_start + BytePos(rel.start as u32);
-                let abs_end = content_start + BytePos(rel.end as u32);
-                let abs_span = Span::new(abs_start, abs_end, SyntaxContext::root(), None);
+    fn emit_sqruff_error<'tcx>(
+        cx: &rustc_lint::LateContext<'tcx>,
+        span: Span,
+        message: impl Into<String>,
+    ) {
+        cx.lint(CARGO_SQRUFF, |diag| {
+            diag.span(span);
+            diag.primary_message("failed to lint SQL query");
+            diag.note(message.into());
+        });
+    }
 
-                cx.lint(CARGO_SQRUFF, |diag| {
-                    let code = violation.rule.as_ref().unwrap().code;
-                    let description = violation.description.to_string();
+    fn emit_violation<'tcx>(
+        cx: &rustc_lint::LateContext<'tcx>,
+        span: Span,
+        code: &str,
+        description: String,
+    ) {
+        cx.lint(CARGO_SQRUFF, |diag| {
+            diag.span(span);
+            diag.primary_message(format!("[{code}]: {description}"));
+            diag.span_label(span, description);
+        });
+    }
 
-                    diag.span(abs_span);
-                    diag.primary_message(format!("[{code}]: {description}"));
-                    diag.span_label(abs_span, description);
-                });
-            }
+    fn emit_fix_suggestion<'tcx>(
+        cx: &rustc_lint::LateContext<'tcx>,
+        span: Span,
+        suggestion: String,
+    ) {
+        cx.lint(CARGO_SQRUFF, |diag| {
+            diag.primary_message("SQL query contains violations");
+            diag.span_suggestion_with_style(
+                span,
+                "consider using `sqruff` to fix this",
+                suggestion,
+                rustc_errors::Applicability::MachineApplicable,
+                rustc_errors::SuggestionStyle::ShowAlways,
+            );
+        });
+    }
 
-            let suggestion = result.fix_string();
-            if !has_violations || sql == suggestion {
+    fn lint_literal<'tcx>(&mut self, cx: &rustc_lint::LateContext<'tcx>, literal: SqlLiteral) {
+        let result = match self.linter.lint_string(&literal.sql, None, true) {
+            Ok(result) => result,
+            Err(err) => {
+                Self::emit_sqruff_error(cx, literal.full_span, err.to_string());
                 return;
             }
+        };
+        let has_violations = result.has_violations();
 
-            cx.lint(CARGO_SQRUFF, |diag| {
-                let span = Span::new(content_start, content_end, SyntaxContext::root(), None);
+        for violation in result.violations() {
+            let abs_start = literal.content_start + BytePos(violation.source_slice.start as u32);
+            let abs_end = literal.content_start + BytePos(violation.source_slice.end as u32);
+            let abs_span = Span::new(abs_start, abs_end, SyntaxContext::root(), None);
+            let code = violation.rule.as_ref().map_or("????", |rule| rule.code);
+            let description = violation.description.to_string();
 
-                diag.primary_message("SQL query contains violations");
-                diag.span_suggestion_with_style(
-                    span,
-                    "consider using `sqruff` to fix this",
-                    suggestion,
-                    rustc_errors::Applicability::MachineApplicable,
-                    rustc_errors::SuggestionStyle::ShowAlways,
-                );
-            });
+            Self::emit_violation(cx, abs_span, code, description);
+        }
+
+        let suggestion = result.fix_string();
+        if !has_violations || literal.sql == suggestion {
+            return;
+        }
+
+        let span = Span::new(
+            literal.content_start,
+            literal.content_end,
+            SyntaxContext::root(),
+            None,
+        );
+        Self::emit_fix_suggestion(cx, span, suggestion);
+    }
+}
+
+impl_lint_pass!(Sql => [CARGO_SQRUFF]);
+
+impl<'tcx> LateLintPass<'tcx> for Sql {
+    fn check_crate(&mut self, cx: &rustc_lint::LateContext<'tcx>) {
+        self.register_paths(cx, SQLX_PATHS);
+        self.register_paths(cx, RUSQLITE_PATHS);
+    }
+
+    fn check_expr(&mut self, cx: &rustc_lint::LateContext<'tcx>, expr: &'tcx Expr<'tcx>) {
+        if !self.tracked_call(cx, expr) {
+            return;
+        }
+
+        if let Some(literal) = Self::sql_literal(expr) {
+            self.lint_literal(cx, literal);
         }
     }
 }
