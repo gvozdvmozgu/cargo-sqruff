@@ -1,0 +1,25 @@
+warning: [LT01]: Expected only single space before "1". Found "  ".
+  --> $DIR/sqlx_query_scalar_bad_spacing.rs:2:60
+   |
+LL |     let _ = sqlx::query_scalar::<sqlx::Sqlite, i64>("SELECT  1;");
+   |                                                            ^^ Expected only single space before "1". Found "  ".
+   |
+   = note: `#[warn(cargo_sqruff)]` on by default
+
+warning: [LT12]: Files must end with a single trailing newline.
+  --> $DIR/sqlx_query_scalar_bad_spacing.rs:2:63
+   |
+LL |     let _ = sqlx::query_scalar::<sqlx::Sqlite, i64>("SELECT  1;");
+   |                                                               ^ Files must end with a single trailing newline.
+
+warning: SQL query contains violations
+   |
+help: consider using `sqruff` to fix this
+  --> $DIR/sqlx_query_scalar_bad_spacing.rs:2:54
+   |
+LL -     let _ = sqlx::query_scalar::<sqlx::Sqlite, i64>("SELECT  1;");
+LL +     let _ = sqlx::query_scalar::<sqlx::Sqlite, i64>("SELECT 1;
+   |
+
+warning: 3 warnings emitted
+
