@@ -15,7 +15,7 @@ sqruff-lib = { git = "https://github.com/quarylabs/sqruff.git" }
 [dev-dependencies]
 dylint_testing = "5.0"
 rusqlite = { version = "0.31", features = ["bundled"] }
-sqlx = { version = "0.8", default-features = false, features = ["sqlite"] }
+sqlx = { version = "0.8", default-features = false, features = ["macros", "sqlite"] }
 
 [package.metadata.rust-analyzer]
 rustc_private = true

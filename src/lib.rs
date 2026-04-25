@@ -13,9 +13,13 @@ dylint_linting::dylint_library!();
 use clippy_utils::fn_def_id;
 use clippy_utils::paths::{PathNS, lookup_path_str};
 
-use rustc_ast::{LitKind, StrStyle};
+use rustc_ast::{
+    LitKind, StrStyle, ast,
+    token::{Token, TokenKind},
+    tokenstream::{TokenStream, TokenTree},
+};
 use rustc_hir::{Expr, ExprKind, def_id::DefIdSet};
-use rustc_lint::{LateLintPass, LintContext as _, LintStore};
+use rustc_lint::{EarlyContext, EarlyLintPass, LateLintPass, LintContext, LintStore};
 use rustc_session::{Session, declare_lint, impl_lint_pass};
 use rustc_span::{BytePos, Span, SyntaxContext};
 use sqruff_lib::core::{config::FluffConfig, linter::core::Linter};
@@ -28,6 +32,15 @@ const SQLX_PATHS: &[&str] = &[
     "sqlx::query_scalar_with",
     "sqlx::query_with",
     "sqlx::raw_sql",
+];
+
+const SQLX_INLINE_MACROS: &[&str] = &[
+    "query",
+    "query_unchecked",
+    "query_as",
+    "query_as_unchecked",
+    "query_scalar",
+    "query_scalar_unchecked",
 ];
 
 const RUSQLITE_PATHS: &[&str] = &[
@@ -55,20 +68,31 @@ declare_lint! {
 #[unsafe(no_mangle)]
 pub fn register_lints(_sess: &Session, lint_store: &mut LintStore) {
     lint_store.register_lints(&[CARGO_SQRUFF]);
+    lint_store.register_pre_expansion_pass(|| {
+        Box::new(SqlMacros {
+            linter: sqruff_linter(),
+        })
+    });
     lint_store.register_late_pass(|_| {
-        let config = FluffConfig::from_root(None, false, None).unwrap();
-        let linter = Linter::new(config, None, None, true);
-
         Box::new(Sql {
-            linter,
+            linter: sqruff_linter(),
             definitions: DefIdSet::default(),
         })
     });
 }
 
+fn sqruff_linter() -> Linter {
+    let config = FluffConfig::from_root(None, false, None).unwrap();
+    Linter::new(config, None, None, true).unwrap()
+}
+
 struct Sql {
     linter: Linter,
     definitions: DefIdSet,
+}
+
+struct SqlMacros {
+    linter: Linter,
 }
 
 struct SqlLiteral {
@@ -79,6 +103,20 @@ struct SqlLiteral {
 }
 
 impl Sql {
+    fn string_literal(raw: &str, style: StrStyle, span: Span) -> SqlLiteral {
+        let prefix_len = BytePos(match style {
+            StrStyle::Raw(n) => 2 + n as u32,
+            StrStyle::Cooked => 1,
+        });
+
+        SqlLiteral {
+            sql: raw.to_owned(),
+            full_span: span,
+            content_start: span.lo() + prefix_len,
+            content_end: span.hi() - prefix_len,
+        }
+    }
+
     fn register_paths<'tcx>(&mut self, cx: &rustc_lint::LateContext<'tcx>, paths: &[&str]) {
         for path in paths {
             for def_id in lookup_path_str(cx.tcx, PathNS::Value, path) {
@@ -103,33 +141,105 @@ impl Sql {
         }
     }
 
+    fn string_token(token: &Token) -> Option<SqlLiteral> {
+        if let TokenKind::Literal(lit) = token.kind
+            && lit.suffix.is_none()
+            && let Ok(LitKind::Str(ref raw, style)) = LitKind::from_token_lit(lit)
+        {
+            return Some(Self::string_literal(raw.as_str(), style, token.span));
+        }
+
+        None
+    }
+
+    fn string_token_tree(tt: &TokenTree) -> Option<SqlLiteral> {
+        if let TokenTree::Token(token, _) = tt {
+            Self::string_token(token)
+        } else {
+            None
+        }
+    }
+
+    fn string_literal_arg(tokens: &TokenStream, target_arg_index: usize) -> Option<SqlLiteral> {
+        let mut arg_index = 0;
+        let mut candidate = None;
+        let mut saw_other_token = false;
+
+        for tt in tokens.iter() {
+            if Self::token_is_comma(tt) {
+                if arg_index == target_arg_index {
+                    return if !saw_other_token { candidate } else { None };
+                }
+
+                arg_index += 1;
+                candidate = None;
+                saw_other_token = false;
+            } else if candidate.is_none()
+                && !saw_other_token
+                && let Some(literal) = Self::string_token_tree(tt)
+            {
+                candidate = Some(literal);
+            } else {
+                saw_other_token = true;
+            }
+        }
+
+        if arg_index == target_arg_index && !saw_other_token {
+            candidate
+        } else {
+            None
+        }
+    }
+
+    fn token_is_comma(tt: &TokenTree) -> bool {
+        matches!(
+            tt,
+            TokenTree::Token(
+                Token {
+                    kind: TokenKind::Comma,
+                    ..
+                },
+                _
+            )
+        )
+    }
+
+    fn sqlx_macro_name(mac: &ast::MacCall) -> Option<&str> {
+        let [krate, name] = mac.path.segments.as_slice() else {
+            return None;
+        };
+
+        if krate.ident.name.as_str() != "sqlx" {
+            return None;
+        }
+
+        let name = name.ident.name.as_str();
+        SQLX_INLINE_MACROS.contains(&name).then_some(name)
+    }
+
+    fn macro_sql_literal(mac: &ast::MacCall) -> Option<SqlLiteral> {
+        let name = Self::sqlx_macro_name(mac)?;
+        let query_arg_index = match name {
+            "query_as" | "query_as_unchecked" => 1,
+            _ => 0,
+        };
+
+        Self::string_literal_arg(&mac.args.tokens, query_arg_index)
+    }
+
     fn sql_literal<'tcx>(expr: &'tcx Expr<'tcx>) -> Option<SqlLiteral> {
         let arg = Self::first_arg(expr)?;
 
         if let ExprKind::Lit(lit) = arg.kind
             && let LitKind::Str(ref raw, style) = lit.node
         {
-            let prefix_len = BytePos(match style {
-                StrStyle::Raw(n) => 2 + n as u32,
-                StrStyle::Cooked => 1,
-            });
-
-            return Some(SqlLiteral {
-                sql: raw.as_str().to_owned(),
-                full_span: arg.span,
-                content_start: arg.span.lo() + prefix_len,
-                content_end: arg.span.hi() - prefix_len,
-            });
+            return Some(Self::string_literal(raw.as_str(), style, arg.span));
         }
 
         None
     }
 
-    fn emit_sqruff_error<'tcx>(
-        cx: &rustc_lint::LateContext<'tcx>,
-        span: Span,
-        message: impl Into<String>,
-    ) {
+    fn emit_sqruff_error(cx: &impl LintContext, span: Span, message: impl Into<String>) {
         cx.lint(CARGO_SQRUFF, |diag| {
             diag.span(span);
             diag.primary_message("failed to lint SQL query");
@@ -137,12 +247,7 @@ impl Sql {
         });
     }
 
-    fn emit_violation<'tcx>(
-        cx: &rustc_lint::LateContext<'tcx>,
-        span: Span,
-        code: &str,
-        description: String,
-    ) {
+    fn emit_violation(cx: &impl LintContext, span: Span, code: &str, description: String) {
         cx.lint(CARGO_SQRUFF, |diag| {
             diag.span(span);
             diag.primary_message(format!("[{code}]: {description}"));
@@ -150,11 +255,7 @@ impl Sql {
         });
     }
 
-    fn emit_fix_suggestion<'tcx>(
-        cx: &rustc_lint::LateContext<'tcx>,
-        span: Span,
-        suggestion: String,
-    ) {
+    fn emit_fix_suggestion(cx: &impl LintContext, span: Span, suggestion: String) {
         cx.lint(CARGO_SQRUFF, |diag| {
             diag.primary_message("SQL query contains violations");
             diag.span_suggestion_with_style(
@@ -167,8 +268,8 @@ impl Sql {
         });
     }
 
-    fn lint_literal<'tcx>(&mut self, cx: &rustc_lint::LateContext<'tcx>, literal: SqlLiteral) {
-        let result = match self.linter.lint_string(&literal.sql, None, true) {
+    fn lint_literal(cx: &impl LintContext, linter: &mut Linter, literal: SqlLiteral) {
+        let result = match linter.lint_string(&literal.sql, None, true) {
             Ok(result) => result,
             Err(err) => {
                 Self::emit_sqruff_error(cx, literal.full_span, err.to_string());
@@ -203,6 +304,17 @@ impl Sql {
 }
 
 impl_lint_pass!(Sql => [CARGO_SQRUFF]);
+impl_lint_pass!(SqlMacros => [CARGO_SQRUFF]);
+
+impl EarlyLintPass for SqlMacros {
+    fn check_expr(&mut self, cx: &EarlyContext<'_>, expr: &ast::Expr) {
+        if let ast::ExprKind::MacCall(mac) = &expr.kind
+            && let Some(literal) = Sql::macro_sql_literal(mac)
+        {
+            Sql::lint_literal(cx, &mut self.linter, literal);
+        }
+    }
+}
 
 impl<'tcx> LateLintPass<'tcx> for Sql {
     fn check_crate(&mut self, cx: &rustc_lint::LateContext<'tcx>) {
@@ -211,12 +323,16 @@ impl<'tcx> LateLintPass<'tcx> for Sql {
     }
 
     fn check_expr(&mut self, cx: &rustc_lint::LateContext<'tcx>, expr: &'tcx Expr<'tcx>) {
+        if expr.span.from_expansion() {
+            return;
+        }
+
         if !self.tracked_call(cx, expr) {
             return;
         }
 
         if let Some(literal) = Self::sql_literal(expr) {
-            self.lint_literal(cx, literal);
+            Self::lint_literal(cx, &mut self.linter, literal);
         }
     }
 }
