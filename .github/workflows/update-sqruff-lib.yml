@@ -1,0 +1,144 @@
+name: Update sqruff-lib
+
+on:
+  schedule:
+    - cron: "0 8 * * 1"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+env:
+  CARGO_TERM_COLOR: always
+  CARGO_INCREMENTAL: 0
+  CARGO_NET_RETRY: 10
+  RUST_BACKTRACE: short
+  RUSTUP_MAX_RETRIES: 10
+
+jobs:
+  update-sqruff-lib:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          rustflags: ""
+          cache: false
+
+      - name: Install dylint-link
+        run: cargo install --locked dylint-link
+
+      - name: Cache dependencies
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: rust-${{ hashFiles('rust-toolchain') }}
+
+      - name: Locate sqruff-lib dependency
+        id: locate
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          dependency_files="$(git grep -l 'sqruff-lib' -- Cargo.toml '**/Cargo.toml' || true)"
+          if [[ -z "$dependency_files" ]]; then
+            echo "sqruff-lib was not found in any Cargo.toml file." >&2
+            exit 1
+          fi
+
+          {
+            echo "dependency_files<<EOF"
+            echo "$dependency_files"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Found sqruff-lib in:"
+          echo "$dependency_files"
+
+      - name: Update sqruff-lib
+        run: cargo update -p sqruff-lib
+
+      - name: Check for changes
+        id: changes
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          unexpected_files="$(git diff --name-only | grep -vE '^(Cargo\.toml|Cargo\.lock)$' || true)"
+          if [[ -n "$unexpected_files" ]]; then
+            echo "Unexpected files changed:" >&2
+            echo "$unexpected_files" >&2
+            exit 1
+          fi
+
+          changed_files="$(git diff --name-only -- Cargo.toml Cargo.lock)"
+          if [[ -z "$changed_files" ]]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "sqruff-lib is already up to date."
+            exit 0
+          fi
+
+          {
+            echo "changed=true"
+            echo "changed_files<<EOF"
+            echo "$changed_files"
+            echo "EOF"
+          } >> "$GITHUB_OUTPUT"
+
+          echo "Changed files:"
+          echo "$changed_files"
+
+      - name: cargo build
+        if: steps.changes.outputs.changed == 'true'
+        run: cargo build --quiet
+
+      - name: cargo clippy
+        if: steps.changes.outputs.changed == 'true'
+        run: cargo clippy --quiet -- -D warnings
+
+      - name: cargo test
+        if: steps.changes.outputs.changed == 'true'
+        run: cargo test -- --nocapture --quiet
+
+      - name: cargo fmt --check
+        if: steps.changes.outputs.changed == 'true'
+        run: cargo fmt --check
+
+      - name: Write pull request body
+        if: steps.changes.outputs.changed == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          {
+            echo "This PR updates the \`sqruff-lib\` dependency."
+            echo
+            echo "Dependency declaration found in:"
+            echo "${{ steps.locate.outputs.dependency_files }}" | sed 's/^/- `/' | sed 's/$/`/'
+            echo
+            echo "Changed files:"
+            echo "${{ steps.changes.outputs.changed_files }}" | sed 's/^/- `/' | sed 's/$/`/'
+            echo
+            echo "Validation run:"
+            echo "- \`cargo build --quiet\`"
+            echo "- \`cargo clippy --quiet -- -D warnings\`"
+            echo "- \`cargo test -- --nocapture --quiet\`"
+            echo "- \`cargo fmt --check\`"
+          } > pr-body.md
+
+      - name: Create pull request
+        if: steps.changes.outputs.changed == 'true'
+        uses: peter-evans/create-pull-request@v8
+        with:
+          branch: update-sqruff-lib
+          delete-branch: true
+          title: "update sqruff-lib"
+          body-path: pr-body.md
+          commit-message: "update sqruff-lib"
+          add-paths: |
+            Cargo.toml
+            Cargo.lock
