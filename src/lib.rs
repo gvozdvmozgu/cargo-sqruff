@@ -83,7 +83,7 @@ pub fn register_lints(_sess: &Session, lint_store: &mut LintStore) {
 
 fn sqruff_linter() -> Linter {
     let config = FluffConfig::from_root(None, false, None).unwrap();
-    Linter::new(config, None, None, true)
+    Linter::new(config, None, None, true).unwrap()
 }
 
 struct Sql {
