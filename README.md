@@ -2,6 +2,8 @@
 
 Lint your SQL queries directly within your Rust code. A cargo-sqruff library powered by sqruff.
 
+Currently supports string literal queries passed to `sqlx` query functions, inline `sqlx` query macros, and common `rusqlite` query methods.
+
 ## Quick start
 
 1. Install cargo-dylint and dylint-link:

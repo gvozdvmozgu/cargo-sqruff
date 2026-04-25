@@ -1,0 +1,4 @@
+*.md text eol=lf
+*.rs text eol=lf
+*.stderr text eol=lf
+*.toml text eol=lf
