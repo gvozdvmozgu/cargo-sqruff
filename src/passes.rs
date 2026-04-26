@@ -1,3 +1,8 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+};
+
 use rustc_ast::ast;
 use rustc_hir::Expr;
 use rustc_lint::{EarlyContext, EarlyLintPass, LateContext, LateLintPass};
@@ -5,33 +10,59 @@ use rustc_session::impl_lint_pass;
 use sqruff_lib::core::linter::core::Linter;
 
 use crate::{
-    CARGO_SQRUFF, literal, registry,
+    CARGO_SQRUFF,
+    config::{self, SqruffConfig},
+    literal, registry,
     registry::{ResolvedCallRegistry, builtin_library_specs},
     sqruff,
 };
 
 pub(crate) struct Sql {
-    linter: Linter,
+    linter: ConfiguredLinter,
     calls: ResolvedCallRegistry,
 }
 
 pub(crate) struct SqlMacros {
-    linter: Linter,
+    linter: ConfiguredLinter,
+}
+
+struct ConfiguredLinter {
+    state: Result<Linter, String>,
+    emitted_config_error: Arc<AtomicBool>,
+}
+
+impl ConfiguredLinter {
+    fn new(config: SqruffConfig, emitted_config_error: Arc<AtomicBool>) -> Self {
+        Self {
+            state: config::build_config(&config).and_then(sqruff::linter),
+            emitted_config_error,
+        }
+    }
+
+    fn lint_literal(&mut self, cx: &impl rustc_lint::LintContext, literal: literal::SqlLiteral) {
+        match &mut self.state {
+            Ok(linter) => sqruff::lint_literal(cx, linter, literal),
+            Err(message) if !self.emitted_config_error.swap(true, Ordering::Relaxed) => {
+                sqruff::emit_config_error(cx, literal.full_span, message);
+            }
+            Err(_) => {}
+        }
+    }
 }
 
 impl Sql {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(config: SqruffConfig, emitted_config_error: Arc<AtomicBool>) -> Self {
         Self {
-            linter: sqruff::linter(),
+            linter: ConfiguredLinter::new(config, emitted_config_error),
             calls: ResolvedCallRegistry::new(),
         }
     }
 }
 
 impl SqlMacros {
-    pub(crate) fn new() -> Self {
+    pub(crate) fn new(config: SqruffConfig, emitted_config_error: Arc<AtomicBool>) -> Self {
         Self {
-            linter: sqruff::linter(),
+            linter: ConfiguredLinter::new(config, emitted_config_error),
         }
     }
 }
@@ -46,7 +77,7 @@ impl EarlyLintPass for SqlMacros {
             && let Some(literal) =
                 literal::token_stream_sql_literal(&mac.args.tokens, sql_arg_index)
         {
-            sqruff::lint_literal(cx, &mut self.linter, literal);
+            self.linter.lint_literal(cx, literal);
         }
     }
 }
@@ -66,7 +97,7 @@ impl<'tcx> LateLintPass<'tcx> for Sql {
         };
 
         if let Some(literal) = literal::expr_sql_literal(expr, sql_arg_index) {
-            sqruff::lint_literal(cx, &mut self.linter, literal);
+            self.linter.lint_literal(cx, literal);
         }
     }
 }

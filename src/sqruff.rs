@@ -4,9 +4,16 @@ use sqruff_lib::core::{config::FluffConfig, linter::core::Linter};
 
 use crate::{CARGO_SQRUFF, literal::SqlLiteral};
 
-pub(crate) fn linter() -> Linter {
-    let config = FluffConfig::from_root(None, false, None).unwrap();
-    Linter::new(config, None, None, true).unwrap()
+pub(crate) fn linter(config: FluffConfig) -> Result<Linter, String> {
+    Linter::new(config, None, None, true).map_err(|err| err.to_string())
+}
+
+pub(crate) fn emit_config_error(cx: &impl LintContext, span: Span, message: &str) {
+    cx.lint(CARGO_SQRUFF, |diag| {
+        diag.span(span);
+        diag.primary_message("failed to load sqruff config");
+        diag.note(message.to_owned());
+    });
 }
 
 pub(crate) fn lint_literal(cx: &impl LintContext, linter: &mut Linter, literal: SqlLiteral) {

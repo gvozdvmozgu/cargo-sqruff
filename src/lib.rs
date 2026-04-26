@@ -8,8 +8,11 @@ extern crate rustc_lint;
 extern crate rustc_session;
 extern crate rustc_span;
 
+use std::sync::{Arc, atomic::AtomicBool};
+
 dylint_linting::dylint_library!();
 
+mod config;
 mod literal;
 mod passes;
 mod registry;
@@ -26,8 +29,25 @@ declare_lint! {
 
 #[allow(clippy::no_mangle_with_rust_abi)]
 #[unsafe(no_mangle)]
-pub fn register_lints(_sess: &Session, lint_store: &mut LintStore) {
+pub fn register_lints(sess: &Session, lint_store: &mut LintStore) {
     lint_store.register_lints(&[CARGO_SQRUFF]);
-    lint_store.register_pre_expansion_pass(|| Box::new(passes::SqlMacros::new()));
-    lint_store.register_late_pass(|_| Box::new(passes::Sql::new()));
+
+    let config = config::sqruff_config(sess);
+    let emitted_config_error = Arc::new(AtomicBool::new(false));
+
+    let macro_config = config.clone();
+    let macro_emitted_config_error = Arc::clone(&emitted_config_error);
+    lint_store.register_pre_expansion_pass(move || {
+        Box::new(passes::SqlMacros::new(
+            macro_config.clone(),
+            Arc::clone(&macro_emitted_config_error),
+        ))
+    });
+
+    lint_store.register_late_pass(move |_| {
+        Box::new(passes::Sql::new(
+            config.clone(),
+            Arc::clone(&emitted_config_error),
+        ))
+    });
 }
