@@ -1,0 +1,18 @@
+warning: [LT12]: Files must end with a single trailing newline.
+  --> $DIR/metadata_excludes_lt01.rs:6:27
+   |
+LL |     sqlx::query("SELECT  1;");
+   |                           ^ Files must end with a single trailing newline.
+   |
+   = note: `#[warn(cargo_sqruff)]` on by default
+
+warning: SQL query contains violations
+   |
+help: consider using `sqruff` to fix this
+  --> $DIR/metadata_excludes_lt01.rs:6:28
+   |
+LL |     sqlx::query("SELECT  1;
+   |                            +
+
+warning: 2 warnings emitted
+

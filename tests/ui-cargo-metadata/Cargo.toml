@@ -1,0 +1,7 @@
+[package]
+name = "cargo-sqruff-metadata-test"
+version = "0.1.0"
+edition = "2024"
+
+[package.metadata.sqruff]
+exclude_rules = "LT01"

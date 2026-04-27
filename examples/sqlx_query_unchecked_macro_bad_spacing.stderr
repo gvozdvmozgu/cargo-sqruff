@@ -1,0 +1,25 @@
+warning: [LT01]: Expected only single space before "1". Found "  ".
+  --> $DIR/sqlx_query_unchecked_macro_bad_spacing.rs:2:43
+   |
+LL |     let _ = sqlx::query_unchecked!("SELECT  1 AS id;");
+   |                                           ^^ Expected only single space before "1". Found "  ".
+   |
+   = note: `#[warn(cargo_sqruff)]` on by default
+
+warning: [LT12]: Files must end with a single trailing newline.
+  --> $DIR/sqlx_query_unchecked_macro_bad_spacing.rs:2:52
+   |
+LL |     let _ = sqlx::query_unchecked!("SELECT  1 AS id;");
+   |                                                    ^ Files must end with a single trailing newline.
+
+warning: SQL query contains violations
+   |
+help: consider using `sqruff` to fix this
+  --> $DIR/sqlx_query_unchecked_macro_bad_spacing.rs:2:37
+   |
+LL -     let _ = sqlx::query_unchecked!("SELECT  1 AS id;");
+LL +     let _ = sqlx::query_unchecked!("SELECT 1 AS id;
+   |
+
+warning: 3 warnings emitted
+
