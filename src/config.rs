@@ -66,6 +66,14 @@ fn sqruff_config_for_manifest(manifest_path: Option<&Path>) -> SqruffConfig {
 }
 
 fn find_manifest(sess: &Session) -> Option<PathBuf> {
+    if let Some(manifest_path) = sess
+        .local_crate_source_file()
+        .and_then(|file_name| file_name.local_path().map(Path::to_path_buf))
+        .and_then(|path| find_manifest_from(path.as_path()))
+    {
+        return Some(manifest_path);
+    }
+
     let working_dir = sess
         .source_map()
         .working_dir()
@@ -76,14 +84,6 @@ fn find_manifest(sess: &Session) -> Option<PathBuf> {
         .as_ref()
         .map(|path| path.join("Cargo.toml"))
         .filter(|path| path.is_file())
-    {
-        return Some(manifest_path);
-    }
-
-    if let Some(manifest_path) = sess
-        .local_crate_source_file()
-        .and_then(|file_name| file_name.local_path().map(Path::to_path_buf))
-        .and_then(|path| find_manifest_from(path.as_path()))
     {
         return Some(manifest_path);
     }
